@@ -1,0 +1,23 @@
+name: 봇 테스트 메시지
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 테스트 메시지 보내기
+        env:
+          TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          IDS: ${{ secrets.DISCORD_CHANNEL_IDS }}
+        run: |
+          for c in $(echo "$IDS" | tr ',' ' '); do
+            curl -sS --fail-with-body -X POST \
+              -H "Authorization: Bot $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "User-Agent: DiscordBot (https://github.com/summer-o3o/nintendo-news-bot, 1.0)" \
+              -d '{"content":"✅ 뉴스봇 연결 테스트예요!"}' \
+              "https://discord.com/api/v10/channels/$c/messages"
+            echo
+          done
