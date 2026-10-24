@@ -25,9 +25,11 @@ jobs:
       - name: 기록 불러오기
         run: |
           git fetch origin +refs/heads/data:refs/remotes/origin/data || true
-          if git show origin/data:seen.json > /tmp/seen.json 2>/dev/null; then
-            cp /tmp/seen.json seen.json
-          fi
+          for f in seen.json log.md; do
+            if git show "origin/data:$f" > "/tmp/$f" 2>/dev/null; then
+              cp "/tmp/$f" "$f"
+            fi
+          done
       - name: 뉴스 확인 및 전송
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -37,7 +39,9 @@ jobs:
       - name: 기록 저장 (data 브랜치)
         run: |
           [ -f seen.json ] || exit 0
-          cp seen.json /tmp/seen.json
+          mkdir -p /tmp/state
+          cp seen.json /tmp/state/
+          [ -f log.md ] && cp log.md /tmp/state/
           git config user.name "news-bot"
           git config user.email "news-bot@users.noreply.github.com"
           if git rev-parse -q --verify origin/data >/dev/null; then
@@ -46,8 +50,9 @@ jobs:
             git checkout -q -f --orphan data
             git rm -rf -q --cached .
           fi
-          cp /tmp/seen.json seen.json
+          cp /tmp/state/* .
           git add seen.json
+          [ -f log.md ] && git add log.md
           git diff --cached --quiet && exit 0
           git commit -q -m "update seen"
           git push -q origin data

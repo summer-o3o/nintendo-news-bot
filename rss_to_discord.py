@@ -43,6 +43,10 @@ MAX_SEEN = 3000
 SIMILARITY = 0.6
 # 이 시간 안에 보낸 기사들과 비교
 DEDUP_HOURS = 24
+# 실행 기록 파일 (data 브랜치에 저장, 최신이 위). 이 줄 수까지만 보관
+LOG_FILE = "log.md"
+MAX_LOG_LINES = 2000
+KST = timezone(timedelta(hours=9))
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
@@ -132,17 +136,32 @@ def similar(a, b):
 
 
 def recent_titles(seen, cutoff):
-    # seen.json 안에 "T:<시각>|<정리된 제목>" 형태로 보낸 기사 제목도 함께 저장
+    # seen.json 안에 "T:<시각>|<정리된 제목>|<원래 제목>" 형태로 보낸 기사 제목도 함께 저장
     out = []
     for s in seen:
         if isinstance(s, str) and s.startswith("T:"):
             try:
-                ts, norm = s[2:].split("|", 1)
-                if datetime.fromisoformat(ts) >= cutoff:
-                    out.append(norm)
+                parts = s[2:].split("|", 2)
+                if datetime.fromisoformat(parts[0]) >= cutoff:
+                    out.append((parts[1], parts[2] if len(parts) > 2 else parts[1]))
             except Exception:
                 pass
     return out
+
+
+def write_log(lines):
+    if not lines:
+        return
+    old = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, encoding="utf-8") as f:
+            old = f.read().splitlines()
+        if old and old[0].startswith("# "):
+            old = old[2:]
+    header = ["# 닌텐도 뉴스 봇 실행 기록", ""]
+    body = (lines + [""] + old)[:MAX_LOG_LINES]
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(header + body).rstrip() + "\n")
 
 
 def make_embed(item):
@@ -197,13 +216,16 @@ def main():
     pattern = re.compile(KEYWORDS, re.IGNORECASE) if KEYWORDS else None
     seen = load_seen()
 
+    now = datetime.now(timezone.utc)
+    stamp = now.astimezone(KST).strftime("%Y-%m-%d %H:%M")
+
     if seen is None:
         # 첫 실행: 기존 기사로 도배되지 않게 기록만 하고 끝냄
         save_seen([i["id"] for i in items])
         print(f"첫 실행: 기사 {len(items)}개를 기록만 했어요.")
+        write_log([f"## {stamp}", f"- 🆕 첫 실행: 기사 {len(items)}개를 기록만 함"])
         return
 
-    now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=MAX_AGE_HOURS)
     sent_titles = recent_titles(seen, now - timedelta(hours=DEDUP_HOURS))
     seen_set = set(seen)
@@ -211,27 +233,42 @@ def main():
     # 오래된 기사부터 순서대로 올리기
     min_dt = datetime.min.replace(tzinfo=timezone.utc)
     new.sort(key=lambda i: i["dt"] or min_dt)
-    sent = dup = skipped = 0
+    sent = dup = skipped = old_cnt = 0
+    log = []
     for item in new:
         seen.append(item["id"])
+        label = f"{item['title']} · {item['source']}"
         too_old = item["dt"] is None or item["dt"] < cutoff
-        if too_old or (KEYWORDS and not pattern.search(item["title"])):
+        if too_old:
+            old_cnt += 1
+            log.append(f"- ⏰ {MAX_AGE_HOURS}시간 지남: {label}")
+            continue
+        if KEYWORDS and not pattern.search(item["title"]):
+            log.append(f"- 🔤 키워드 없음: {label}")
             continue
         if any(name in item["source"] for name in EXCLUDE_SOURCES):
             skipped += 1
+            log.append(f"- 🚫 제외 언론사: {label}")
             continue
         norm = normalize(item["title"])
-        if any(similar(norm, t) >= SIMILARITY for t in sent_titles):
+        match = max(((similar(norm, n), orig) for n, orig in sent_titles), default=(0, ""))
+        if match[0] >= SIMILARITY:
             dup += 1
             print(f"비슷한 기사라 건너뜀: {item['title']}")
+            log.append(f"- 🔁 중복 {match[0]:.0%}: {label}  ← {match[1]}")
             continue
         send(item)
         time.sleep(1.5)  # 디스코드 전송 제한 방지
         sent += 1
-        sent_titles.append(norm)
-        seen.append(f"T:{now.isoformat()}|{norm}")
+        sent_titles.append((norm, item["title"]))
+        seen.append(f"T:{now.isoformat()}|{norm}|{item['title']}")
+        log.append(f"- ✅ 전송: {label}")
     save_seen(seen)
-    print(f"새 기사 {len(new)}개 중 {sent}개 전송 (비슷한 기사 {dup}개, 제외 언론사 {skipped}개 건너뜀)")
+    summary = (f"새 기사 {len(new)}개 중 {sent}개 전송 "
+               f"(비슷한 기사 {dup}개, 제외 언론사 {skipped}개, {MAX_AGE_HOURS}시간 지남 {old_cnt}개 건너뜀)")
+    print(summary)
+    if log:
+        write_log([f"## {stamp} — {summary}"] + log)
 
 
 if __name__ == "__main__":
