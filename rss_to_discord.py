@@ -55,11 +55,21 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
 def fetch(url):
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (news-bot)"}
-    )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return response.read()
+    last_error = None
+
+    for attempt in range(3):
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0 (news-bot)"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            print(f"구글 뉴스 요청 실패 ({attempt + 1}/3): {exc}")
+            time.sleep(5)
+
+    raise last_error
 
 
 def parse_items(xml_bytes):
