@@ -189,8 +189,9 @@ def recent_titles(seen, cutoff):
     return result
 
 
-def write_log(lines):
-    if not lines:
+def write_log(date_str, block):
+    """log.md 맨 위에 실행 기록을 추가한다. 같은 날짜면 그 날짜 제목 아래에 붙인다."""
+    if not block:
         return
 
     old = []
@@ -202,8 +203,16 @@ def write_log(lines):
         if old and old[0].startswith("# "):
             old = old[2:]
 
+    date_header = f"## 📅 {date_str}"
+    entry = block + ["", "---", ""]
+
+    if old and old[0] == date_header:
+        body = old[:2] + entry + old[2:]
+    else:
+        body = [date_header, ""] + entry + old
+
     header = ["# 닌텐도 뉴스 봇 실행 기록", ""]
-    body = (lines + [""] + old)[:MAX_LOG_LINES]
+    body = body[:MAX_LOG_LINES]
 
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(header + body).rstrip() + "\n")
@@ -348,7 +357,7 @@ def ai_check(title, recent):
 
         answer = re.sub(r"^[`\s]+|[`\s]+$", "", answer)
 
-        # "X", "L", "0", "2", "2번", "2." 같은 답을 모두 처리
+        # "X", "0", "2", "2번", "2." 같은 답을 모두 처리
         if answer.startswith("X"):
             return "off", None
 
@@ -474,19 +483,25 @@ def main():
             "환경변수를 설정해 주세요."
         )
 
-    items = parse_items(fetch(FEED_URL))
+    try:
+        items = parse_items(fetch(FEED_URL))
+    except Exception as exc:
+        print(f"구글 뉴스를 가져오지 못해 이번 실행은 건너뜁니다: {exc}")
+        return
+
     pattern = re.compile(KEYWORDS, re.IGNORECASE) if KEYWORDS else None
     seen = load_seen()
 
     now = datetime.now(timezone.utc)
-    stamp = now.astimezone(KST).strftime("%Y-%m-%d %H:%M")
+    local_now = now.astimezone(KST)
+    log_date = local_now.strftime("%Y-%m-%d")
+    log_time = local_now.strftime("%H:%M")
 
     if seen is None:
         save_seen([item["id"] for item in items])
         print(f"첫 실행: 기사 {len(items)}개를 기록만 했습니다.")
-        write_log([
-            f"## {stamp}",
-            f"- 🆕 첫 실행: 기사 {len(items)}개를 기록만 함",
+        write_log(log_date, [
+            f"**{log_time}** · 🆕 첫 실행: 기사 {len(items)}개를 기록만 함",
         ])
         return
 
@@ -619,7 +634,20 @@ def main():
     print(summary)
 
     if log:
-        write_log([f"## {stamp} — {summary}"] + log)
+        counts = [
+            ("🔁 제목 유사 중복", duplicate_count),
+            ("🤖 AI 중복", ai_duplicate_count),
+            ("🙅 관련 없음", off),
+            ("💤 화제성 낮음", low_count),
+            ("🚫 제외 언론사", skipped),
+            (f"⏰ {MAX_AGE_HOURS}시간 초과", old_count),
+            ("⚠️ 보류", held),
+        ]
+        detail = " · ".join(f"{name} {n}" for name, n in counts if n)
+        headline = f"**{log_time}** · 새 기사 {len(new_items)}개 중 **{sent_count}개 전송**"
+        if detail:
+            headline += f" · {detail}"
+        write_log(log_date, [headline, ""] + log)
 
 
 if __name__ == "__main__":
