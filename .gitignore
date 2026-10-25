@@ -1,1 +1,7 @@
+.idea/
 .venv/
+__pycache__/
+seen.json
+log.md
+test_ai.py
+debug_ai.py
