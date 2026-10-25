@@ -280,7 +280,7 @@ def ai_check(title, recent):
 
     body = json.dumps({
         "model": AI_MODEL,
-        "max_tokens": 20,
+        "max_tokens": 1024,
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
 
