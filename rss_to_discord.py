@@ -47,11 +47,15 @@ DEDUP_HOURS = 24
 LOG_FILE = "log.md"
 MAX_LOG_LINES = 2000
 KST = timezone(timedelta(hours=9))
+# 제목 비교로 못 잡은 중복을 AI(Claude)에게 한 번 더 물어봄. 키가 없으면 건너뜀
+AI_MODEL = "claude-haiku-5-5"
+AI_MAX_TITLES = 40   # 최근 보낸 기사 중 몇 개까지 비교할지
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 CHANNEL_IDS = [c.strip() for c in os.environ.get("DISCORD_CHANNEL_IDS", "").split(",") if c.strip()]
 BOT_UA = "DiscordBot (https://github.com/summer-o3o/nintendo-news-bot, 1.0)"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
 def fetch(url):
@@ -164,6 +168,41 @@ def write_log(lines):
         f.write("\n".join(header + body).rstrip() + "\n")
 
 
+def ai_same_news(title, recent):
+    """recent 중 같은 소식이 있으면 그 원래 제목을, 없거나 실패하면 None."""
+    if not ANTHROPIC_API_KEY or not recent:
+        return None
+    recent = recent[-AI_MAX_TITLES:]
+    listing = "\n".join(f"{i + 1}. {orig}" for i, (_, orig) in enumerate(recent))
+    prompt = (
+        "아래는 최근 디스코드 채널에 올린 닌텐도 관련 뉴스 제목 목록이야.\n\n"
+        f"{listing}\n\n"
+        f"새 기사 제목: {title}\n\n"
+        "새 기사가 목록 중 하나와 '같은 사건·발표·소식'을 다룬 기사인지 판단해.\n"
+        "- 표현이 달라도 같은 소식이면 같은 거야. (예: '미야모토 시게루 문화훈장'과 "
+        "'슈퍼 마리오 만든 게임 전설 문화훈장'은 같은 소식)\n"
+        "- 같은 게임이라도 소식이 다르면 다른 거야. (예: 출시 소식과 리뷰 점수, 판매량은 각각 다른 소식)\n"
+        "같은 소식이 있으면 그 번호만, 없으면 0만 숫자로 답해."
+    )
+    body = json.dumps({"model": AI_MODEL, "max_tokens": 10,
+                       "messages": [{"role": "user", "content": prompt}]}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages", data=body, method="POST",
+        headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.load(r)
+        text = "".join(b.get("text", "") for b in data.get("content", []))
+        m = re.search(r"\d+", text)
+        n = int(m.group()) if m else 0
+        if 1 <= n <= len(recent):
+            return recent[n - 1][1]
+    except Exception as e:
+        print(f"AI 판단 실패, 그냥 보낼게요: {e}")
+    return None
+
+
 def make_embed(item):
     embed = {"title": item["title"][:256], "url": item["link"],
              "color": 0xE60012, "footer": {"text": item["source"]}}
@@ -233,7 +272,7 @@ def main():
     # 오래된 기사부터 순서대로 올리기
     min_dt = datetime.min.replace(tzinfo=timezone.utc)
     new.sort(key=lambda i: i["dt"] or min_dt)
-    sent = dup = skipped = old_cnt = 0
+    sent = dup = ai_dup = skipped = old_cnt = 0
     log = []
     for item in new:
         seen.append(item["id"])
@@ -257,6 +296,12 @@ def main():
             print(f"비슷한 기사라 건너뜀: {item['title']}")
             log.append(f"- 🔁 중복 {match[0]:.0%}: {label}  ← {match[1]}")
             continue
+        ai_match = ai_same_news(item["title"], sent_titles)
+        if ai_match:
+            ai_dup += 1
+            print(f"AI가 같은 소식이라 판단해 건너뜀: {item['title']}")
+            log.append(f"- 🤖 AI 중복: {label}  ← {ai_match}")
+            continue
         send(item)
         time.sleep(1.5)  # 디스코드 전송 제한 방지
         sent += 1
@@ -265,7 +310,8 @@ def main():
         log.append(f"- ✅ 전송: {label}")
     save_seen(seen)
     summary = (f"새 기사 {len(new)}개 중 {sent}개 전송 "
-               f"(비슷한 기사 {dup}개, 제외 언론사 {skipped}개, {MAX_AGE_HOURS}시간 지남 {old_cnt}개 건너뜀)")
+               f"(비슷한 기사 {dup}개, AI 중복 {ai_dup}개, 제외 언론사 {skipped}개, "
+               f"{MAX_AGE_HOURS}시간 지남 {old_cnt}개 건너뜀)")
     print(summary)
     if log:
         write_log([f"## {stamp} — {summary}"] + log)
