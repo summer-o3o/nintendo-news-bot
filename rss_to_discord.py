@@ -450,6 +450,11 @@ def make_embed(item):
         "footer": {"text": item["source"]},
     }
 
+    # 공식 공지는 머리말과 색을 다르게
+    if item.get("official"):
+        embed["author"] = {"name": "📢 닌텐도 공식 공지"}
+        embed["color"] = 0xFFC400
+
     if item["summary"]:
         embed["description"] = item["summary"]
 
