@@ -18,6 +18,11 @@ FEED_URL = (
 MAX_AGE_HOURS = 3
 KEYWORDS = r""
 
+# 닌텐도 코리아 공식 뉴스 (중복만 아니면 전부 전송)
+OFFICIAL_URL = "https://www.nintendo.com/kr/news"
+OFFICIAL_SOURCE = "닌텐도 코리아 공식"
+OFFICIAL_MAX_AGE_DAYS = 2   # 오늘·어제 날짜 공지만 전송
+
 EXCLUDE_SOURCES = [
     "부산일보", "국제신문", "경남신문", "경남도민일보", "경상일보", "울산매일",
     "매일신문", "영남일보", "대구일보", "경북일보", "경북매일", "경북도민일보",
@@ -66,7 +71,7 @@ def fetch(url):
                 return response.read()
         except Exception as exc:
             last_error = exc
-            print(f"구글 뉴스 요청 실패 ({attempt + 1}/3): {exc}")
+            print(f"요청 실패 ({attempt + 1}/3) {url[:40]}: {exc}")
             time.sleep(5)
 
     raise last_error
@@ -122,6 +127,50 @@ def parse_items(xml_bytes):
             "ts": ts,
             "dt": dt,
             "source": source or "구글 뉴스",
+        })
+
+    return items
+
+
+def parse_official(html):
+    """닌텐도 코리아 뉴스 목록 페이지에서 공지 목록을 뽑는다."""
+    items = []
+    blocks = re.findall(
+        r'<a href="(/kr/news/article/[A-Za-z0-9]+)"[^>]*>(.*?)</a>', html, re.S
+    )
+
+    for path, block in blocks:
+        title_m = re.search(r'ncmn-softUnit__name">(.*?)</div>', block, re.S)
+        date_m = re.search(r'(\d{4})\.(\d{2})\.(\d{2})', block)
+        img_m = re.search(r'background-image:url\(([^)]+)\)', block)
+
+        if not title_m:
+            continue
+
+        title = re.sub(r"<[^>]+>", "", title_m.group(1))
+        title = (title.replace("&amp;", "&").replace("&quot;", '"')
+                 .replace("&#x27;", "'").replace("&lt;", "<").replace("&gt;", ">").strip())
+
+        dt = None
+        if date_m:
+            y, mth, d = map(int, date_m.groups())
+            dt = datetime(y, mth, d, tzinfo=KST)
+
+        image = None
+        if img_m:
+            image = img_m.group(1).replace("&amp;", "&").strip("'\"")
+            image = image.split("?")[0] + "?w=1200&fm=jpg"
+
+        items.append({
+            "id": "NK:" + path.rsplit("/", 1)[-1],
+            "title": title,
+            "link": "https://www.nintendo.com" + path,
+            "image": image,
+            "summary": "",
+            "ts": None,
+            "dt": dt,
+            "source": OFFICIAL_SOURCE,
+            "official": True,
         })
 
     return items
@@ -218,7 +267,7 @@ def write_log(date_str, block):
         f.write("\n".join(header + body).rstrip() + "\n")
 
 
-def ai_check(title, recent):
+def ai_check(title, recent, official=False):
     """
     반환값:
     ('off', None): 관련 없는 기사
@@ -327,6 +376,13 @@ def ai_check(title, recent):
         f"기존 발송 기사 목록:\n{listing}\n\n"
         f"새 기사 제목:\n{title}\n"
     )
+
+    if official:
+        prompt += (
+            "\n[중요] 이 새 기사는 닌텐도 코리아의 공식 공지다. "
+            "1단계(관련성)와 3단계(화제성)는 건너뛰고 2단계 중복 판별만 한다. "
+            "X나 L은 출력하지 말고, 같은 사건이면 그 번호를, 아니면 0만 출력한다.\n"
+        )
 
     body = json.dumps({
         "model": AI_MODEL,
@@ -483,40 +539,67 @@ def main():
             "환경변수를 설정해 주세요."
         )
 
-    try:
-        items = parse_items(fetch(FEED_URL))
-    except Exception as exc:
-        print(f"구글 뉴스를 가져오지 못해 이번 실행은 건너뜁니다: {exc}")
-        return
-
-    pattern = re.compile(KEYWORDS, re.IGNORECASE) if KEYWORDS else None
-    seen = load_seen()
-
     now = datetime.now(timezone.utc)
     local_now = now.astimezone(KST)
     log_date = local_now.strftime("%Y-%m-%d")
     log_time = local_now.strftime("%H:%M")
 
+    # ── 두 출처 가져오기 (하나가 실패해도 다른 하나는 진행) ──
+    official_items = []
+    try:
+        official_items = parse_official(fetch(OFFICIAL_URL).decode("utf-8", "replace"))
+        print(f"닌텐도 공식 뉴스 {len(official_items)}개 확인")
+    except Exception as exc:
+        print(f"닌텐도 공식 뉴스를 가져오지 못했습니다: {exc}")
+
+    news_items = []
+    try:
+        news_items = parse_items(fetch(FEED_URL))
+    except Exception as exc:
+        print(f"구글 뉴스를 가져오지 못했습니다: {exc}")
+
+    if not official_items and not news_items:
+        print("가져온 기사가 없어 이번 실행은 건너뜁니다.")
+        return
+
+    pattern = re.compile(KEYWORDS, re.IGNORECASE) if KEYWORDS else None
+    seen = load_seen()
+    first_lines = []
+
     if seen is None:
-        save_seen([item["id"] for item in items])
-        print(f"첫 실행: 기사 {len(items)}개를 기록만 했습니다.")
+        save_seen([item["id"] for item in official_items + news_items])
+        print("첫 실행: 지금 있는 기사를 기록만 했습니다.")
         write_log(log_date, [
-            f"**{log_time}** · 🆕 첫 실행: 기사 {len(items)}개를 기록만 함",
+            f"**{log_time}** · 🆕 첫 실행: 기사 {len(official_items) + len(news_items)}개를 기록만 함",
         ])
         return
 
+    # 공식 뉴스를 처음 읽는 경우: 지금 있는 공지는 기록만 (도배 방지)
+    if official_items and not any(
+            isinstance(entry, str) and entry.startswith("NK:") for entry in seen
+    ):
+        seen.extend(item["id"] for item in official_items)
+        first_lines.append(
+            f"- 🆕 닌텐도 공식 뉴스 첫 확인: 공지 {len(official_items)}개를 기록만 함"
+        )
+        official_items = []
+
     cutoff = now - timedelta(hours=MAX_AGE_HOURS)
+    official_cutoff = (local_now - timedelta(days=OFFICIAL_MAX_AGE_DAYS - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     sent_titles = recent_titles(
         seen, now - timedelta(hours=DEDUP_HOURS)
     )
 
     seen_set = set(seen)
-    new_items = [
-        item for item in items if item["id"] not in seen_set
-    ]
-
     min_dt = datetime.min.replace(tzinfo=timezone.utc)
-    new_items.sort(key=lambda item: item["dt"] or min_dt)
+    new_official = [item for item in official_items if item["id"] not in seen_set]
+    new_news = [item for item in news_items if item["id"] not in seen_set]
+    new_official.sort(key=lambda item: item["dt"] or min_dt)
+    new_news.sort(key=lambda item: item["dt"] or min_dt)
+    # 공식 공지를 먼저 처리해서, 같은 소식의 언론 기사는 중복으로 걸러지게 한다
+    new_items = new_official + new_news
 
     sent_count = 0
     duplicate_count = 0
@@ -526,36 +609,43 @@ def main():
     old_count = 0
     held = 0
     low_count = 0
-    log = []
+    log = list(first_lines)
 
     for item in new_items:
         item_id = item["id"]
+        official = item.get("official", False)
         seen.append(item_id)
         label = f"{item['title']} · {item['source']}"
 
-        if item["dt"] is None or item["dt"] < cutoff:
-            old_count += 1
-            log.append(f"- ⏰ {MAX_AGE_HOURS}시간 지남: {label}")
-            continue
+        if official:
+            if item["dt"] is None or item["dt"] < official_cutoff:
+                old_count += 1
+                log.append(f"- ⏰ 지난 공지: {label}")
+                continue
+        else:
+            if item["dt"] is None or item["dt"] < cutoff:
+                old_count += 1
+                log.append(f"- ⏰ {MAX_AGE_HOURS}시간 지남: {label}")
+                continue
 
-        if KEYWORDS and not pattern.search(item["title"]):
-            log.append(f"- 🔤 키워드 없음: {label}")
-            continue
+            if KEYWORDS and not pattern.search(item["title"]):
+                log.append(f"- 🔤 키워드 없음: {label}")
+                continue
 
-        if any(name in item["source"] for name in EXCLUDE_SOURCES):
-            skipped += 1
-            log.append(f"- 🚫 제외 언론사: {label}")
-            continue
+            if any(name in item["source"] for name in EXCLUDE_SOURCES):
+                skipped += 1
+                log.append(f"- 🚫 제외 언론사: {label}")
+                continue
 
-        excluded_word = next(
-            (word for word in EXCLUDE_TITLE_WORDS if word in item["title"]),
-            None,
-        )
+            excluded_word = next(
+                (word for word in EXCLUDE_TITLE_WORDS if word in item["title"]),
+                None,
+            )
 
-        if excluded_word:
-            off += 1
-            log.append(f"- 🙅 제외 단어 '{excluded_word}': {label}")
-            continue
+            if excluded_word:
+                off += 1
+                log.append(f"- 🙅 제외 단어 '{excluded_word}': {label}")
+                continue
 
         normalized_title = normalize(item["title"])
 
@@ -576,7 +666,7 @@ def main():
             )
             continue
 
-        verdict, ai_match = ai_check(item["title"], sent_titles)
+        verdict, ai_match = ai_check(item["title"], sent_titles, official=official)
 
         if verdict == "error":
             if item_id in seen:
@@ -586,22 +676,23 @@ def main():
             log.append(f"- ⚠️ AI 검사 실패로 발송 보류: {label}")
             continue
 
-        if verdict == "off":
+        if verdict == "dup":
+            ai_duplicate_count += 1
+            print(f"AI가 같은 소식이라 판단해 건너뜁니다: {item['title']}")
+            log.append(f"- 🤖 AI 중복: {label} ← {ai_match}")
+            continue
+
+        # 공식 공지는 관련성·화제성과 관계없이 전송
+        if not official and verdict == "off":
             off += 1
             print(f"AI가 관련 없는 기사라 판단해 건너뜁니다: {item['title']}")
             log.append(f"- 🙅 AI 관련 없음: {label}")
             continue
 
-        if verdict == "low":
+        if not official and verdict == "low":
             low_count += 1
             print(f"AI가 화제성이 낮다고 판단해 건너뜁니다: {item['title']}")
             log.append(f"- 💤 화제성 낮음: {label}")
-            continue
-
-        if verdict == "dup":
-            ai_duplicate_count += 1
-            print(f"AI가 같은 소식이라 판단해 건너뜁니다: {item['title']}")
-            log.append(f"- 🤖 AI 중복: {label} ← {ai_match}")
             continue
 
         if send(item):
@@ -611,7 +702,8 @@ def main():
             seen.append(
                 f"T:{now.isoformat()}|{normalized_title}|{item['title']}"
             )
-            log.append(f"- ✅ 전송: {label}")
+            mark = "📢 공식 전송" if official else "✅ 전송"
+            log.append(f"- {mark}: {label}")
 
         else:
             if item_id in seen:
@@ -627,7 +719,7 @@ def main():
         f"(제목 유사 중복 {duplicate_count}개, "
         f"AI 중복 {ai_duplicate_count}개, 관련 없음 {off}개, 화제성 낮음 {low_count}개, "
         f"제외 언론사 {skipped}개, "
-        f"{MAX_AGE_HOURS}시간 초과 {old_count}개, "
+        f"시간 초과 {old_count}개, "
         f"발송 보류 {held}개)"
     )
 
@@ -640,7 +732,7 @@ def main():
             ("🙅 관련 없음", off),
             ("💤 화제성 낮음", low_count),
             ("🚫 제외 언론사", skipped),
-            (f"⏰ {MAX_AGE_HOURS}시간 초과", old_count),
+            ("⏰ 시간 초과", old_count),
             ("⚠️ 보류", held),
         ]
         detail = " · ".join(f"{name} {n}" for name, n in counts if n)
