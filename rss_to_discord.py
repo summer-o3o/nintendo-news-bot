@@ -33,6 +33,17 @@ EXCLUDE_SOURCES = [
     "전라일보", "새전북신문", "전북도민일보", "제주일보", "한라일보", "제민일보",
 ]
 
+# 같은 소식이 여러 매체에서 동시에 잡히면 이 목록 앞쪽 매체 기사를 먼저 보냄
+# (나머지는 중복으로 걸러짐). 목록에 없는 매체는 맨 뒤.
+PREFERRED_SOURCES = [
+    # 게임 전문지
+    "인벤", "디스이즈게임", "게임메카", "루리웹", "게임조선", "게임동아",
+    "경향게임스", "게임포커스", "게임샷", "게임톡",
+    # 주요 언론
+    "연합뉴스", "조선일보", "중앙일보", "동아일보", "한겨레", "경향신문",
+    "매일경제", "한국경제", "머니투데이", "지디넷코리아", "ZDNet", "전자신문", "블로터",
+]
+
 # 단어만으로 기사를 무조건 제외하지 않고 AI가 관련성을 판단
 EXCLUDE_TITLE_WORDS = []
 
@@ -182,6 +193,14 @@ def parse_official(html):
         })
 
     return items
+
+
+def source_rank(source):
+    """선호 매체면 목록 순서(작을수록 우선), 아니면 맨 뒤."""
+    for index, name in enumerate(PREFERRED_SOURCES):
+        if name in source:
+            return index
+    return len(PREFERRED_SOURCES)
 
 
 def load_seen():
@@ -622,7 +641,8 @@ def main():
     new_official = [item for item in official_items if item["id"] not in seen_set]
     new_news = [item for item in news_items if item["id"] not in seen_set]
     new_official.sort(key=lambda item: item["dt"] or min_dt)
-    new_news.sort(key=lambda item: item["dt"] or min_dt)
+    # 선호 매체 기사를 먼저 처리해서, 같은 소식이면 선호 매체 기사가 나가게 한다
+    new_news.sort(key=lambda item: (source_rank(item["source"]), item["dt"] or min_dt))
     # 공식 공지를 먼저 처리해서, 같은 소식의 언론 기사는 중복으로 걸러지게 한다
     new_items = new_official + new_news
 
