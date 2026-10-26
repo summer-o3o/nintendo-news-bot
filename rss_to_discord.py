@@ -135,11 +135,13 @@ def parse_items(xml_bytes):
 def parse_official(html):
     """닌텐도 코리아 뉴스 목록 페이지에서 공지 목록을 뽑는다."""
     items = []
-    blocks = re.findall(
-        r'<a href="(/kr/news/article/[A-Za-z0-9]+)"[^>]*>(.*?)</a>', html, re.S
-    )
+    blocks = re.findall(r'<a href="([^"]+)"[^>]*>(.*?)</a>', html, re.S)
 
-    for path, block in blocks:
+    for href, block in blocks:
+        # 공지 카드만 (메뉴 등 다른 링크는 제목 칸이 없음)
+        if "ncmn-softUnit__name" not in block:
+            continue
+
         title_m = re.search(r'ncmn-softUnit__name">(.*?)</div>', block, re.S)
         date_m = re.search(r'(\d{4})\.(\d{2})\.(\d{2})', block)
         img_m = re.search(r'background-image:url\(([^)]+)\)', block)
@@ -161,10 +163,16 @@ def parse_official(html):
             image = img_m.group(1).replace("&amp;", "&").strip("'\"")
             image = image.split("?")[0] + "?w=1200&fm=jpg"
 
+        # 뉴스 기사 말고 게임 페이지·유튜브·포켓몬코리아로 바로 가는 공지도 있음
+        href = href.replace("&amp;", "&").strip()
+        link = "https://www.nintendo.com" + href if href.startswith("/") else href
+        article = re.match(r"/kr/news/article/([A-Za-z0-9]+)", href)
+        item_id = "NK:" + (article.group(1) if article else link)
+
         items.append({
-            "id": "NK:" + path.rsplit("/", 1)[-1],
+            "id": item_id,
             "title": title,
-            "link": "https://www.nintendo.com" + path,
+            "link": link,
             "image": image,
             "summary": "",
             "ts": None,
