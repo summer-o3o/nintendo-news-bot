@@ -253,12 +253,15 @@ def write_log(date_str, block):
             old = old[2:]
 
     date_header = f"## 📅 {date_str}"
-    entry = block + ["", "---", ""]
+    entry = block + [""]
 
     if old and old[0] == date_header:
         body = old[:2] + entry + old[2:]
+    elif old:
+        # 날짜가 바뀌면 이전 날짜와 구분선으로 나눔
+        body = [date_header, ""] + entry + ["---", ""] + old
     else:
-        body = [date_header, ""] + entry + old
+        body = [date_header, ""] + entry
 
     header = ["# 닌텐도 뉴스 봇 실행 기록", ""]
     body = body[:MAX_LOG_LINES]
