@@ -212,11 +212,18 @@ def parse_system_update(console, url, html):
         # 다음 버전 제목이 나오기 전까지가 변경 내용
         following = [x.start() for x in matches if x.start() > m.end()]
         end = min(following) if following else m.end() + 800
-        body = text[m.end():end].strip()
-        return "\n".join(
-            line if line.startswith(("-", "・", "•")) else f"• {line}"
-            for line in body.splitlines() if len(line) > 3
-        )[:700]
+        lines = []
+        for line in text[m.end():end].splitlines():
+            line = line.strip(" -・•")
+            # 변경 내용이 끝나고 주의사항·안내가 시작되면 멈춤
+            if "주의" in line or line.startswith(("본체 업데이트", "업데이트 내역")):
+                break
+            # 소제목이나 버전 번호만 있는 줄은 건너뜀
+            if (len(line) <= 3 or re.fullmatch(r"\d+\.\d+\.\d+", line)
+                    or line in ("업데이트 내용",) or line.startswith("이전 버전에서")):
+                continue
+            lines.append(f"• {line}")
+        return "\n".join(lines)[:700]
 
     # 같은 버전이 "현재 버전" 안내와 본문 제목에 두 번 나올 수 있어 내용이 긴 쪽을 씀
     latest, notes = max(
