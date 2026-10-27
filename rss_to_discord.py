@@ -21,7 +21,7 @@ YOUTUBE_FEED_URL = (
 YOUTUBE_SOURCE = "한국닌텐도 유튜브"
 YOUTUBE_MAX_AGE_HOURS = 24
 # 제목에 이 단어가 있으면 무조건 제외 (광고 영상)
-YOUTUBE_SKIP_WORDS = [r"\bCM\b", "TVCM", "광고"]
+YOUTUBE_SKIP_WORDS = [r"\bCM\b", "TVCM", "광고", "#shorts"]
 # 다이렉트 본편: "Nintendo Direct 2026.9.9", "젤다의 전설 40주년 Direct 2026.9.8"
 DIRECT_PATTERN = re.compile(r"Direct\s*\d{4}\.\d{1,2}\.\d{1,2}", re.IGNORECASE)
 # 다이렉트 개별 클립: "스타폭스 [Nintendo Direct 2026.9.9]", "... 【... Direct 2026.9.8】"
