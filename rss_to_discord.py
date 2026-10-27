@@ -61,6 +61,12 @@ CHANNEL_IDS = [
 BOT_UA = "DiscordBot (https://github.com/summer-o3o/nintendo-news-bot, 1.0)"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
+# 닌텐도 서포트 페이지는 봇 표시가 있는 접속을 막아서(403) 일반 브라우저로 접속
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+)
+
 ATOM = "{http://www.w3.org/2005/Atom}"
 YT = "{http://www.youtube.com/xml/schemas/2015}"
 MEDIA = "{http://search.yahoo.com/mrss/}"
@@ -71,7 +77,7 @@ def fetch(url):
 
     for attempt in range(3):
         req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 (news-bot)"}
+            url, headers={"User-Agent": BROWSER_UA}
         )
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
