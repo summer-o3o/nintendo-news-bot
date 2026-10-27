@@ -27,6 +27,18 @@ DIRECT_PATTERN = re.compile(r"Direct\s*\d{4}\.\d{1,2}\.\d{1,2}", re.IGNORECASE)
 # 다이렉트 개별 클립: "스타폭스 [Nintendo Direct 2026.9.9]", "... 【... Direct 2026.9.8】"
 DIRECT_CLIP_PATTERN = re.compile(r"[\[【][^\]】]*Direct[^\]】]*[\]】]", re.IGNORECASE)
 
+# ── 출처 3: 본체 시스템 업데이트 (새 버전이 나오면 바로 전송) ──
+SYSTEM_UPDATE_PAGES = [
+    ("Nintendo Switch 2", "https://support.nintendo.com/kr/switch2/update/index.html"),
+    ("Nintendo Switch", "https://support.nintendo.com/kr/switch/system_update/index.html"),
+]
+SYSTEM_UPDATE_SOURCE = "닌텐도 서포트"
+SYSTEM_UPDATE_MAX_AGE_DAYS = 7
+# "23.0.0 (2026년 9월 10일 배포)" / "21.0.1（2025년 11월 25일 배포 시작）" / "22.0.0 (2026 3월 17일 배포)"
+VERSION_PATTERN = re.compile(
+    r"(\d{1,2}\.\d{1,2}\.\d{1,2})\s*[(（]\s*(\d{4})\s*년?\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일\s*배포[^)）]*[)）]"
+)
+
 SEEN_FILE = "seen.json"
 MAX_SEEN = 10000
 SIMILARITY = 0.75
@@ -165,6 +177,60 @@ def parse_youtube(xml_bytes):
         })
 
     return items
+
+
+def html_to_text(html):
+    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    html = re.sub(r"<br\s*/?>|</(p|li|div|h\d)>", "\n", html, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = (text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", '"')
+            .replace("&#x27;", "'").replace("&lt;", "<").replace("&gt;", ">"))
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+def parse_system_update(console, url, html):
+    """서포트 페이지에서 가장 최신 시스템 버전 하나를 뽑는다."""
+    text = html_to_text(html)
+    matches = list(VERSION_PATTERN.finditer(text))
+
+    if not matches:
+        return []
+
+    def version_key(m):
+        return tuple(int(x) for x in m.group(1).split("."))
+
+    top = max(version_key(m) for m in matches)
+
+    def notes_of(m):
+        # 다음 버전 제목이 나오기 전까지가 변경 내용
+        following = [x.start() for x in matches if x.start() > m.end()]
+        end = min(following) if following else m.end() + 800
+        body = text[m.end():end].strip()
+        return "\n".join(
+            line if line.startswith(("-", "・", "•")) else f"• {line}"
+            for line in body.splitlines() if len(line) > 3
+        )[:700]
+
+    # 같은 버전이 "현재 버전" 안내와 본문 제목에 두 번 나올 수 있어 내용이 긴 쪽을 씀
+    latest, notes = max(
+        ((m, notes_of(m)) for m in matches if version_key(m) == top),
+        key=lambda pair: len(pair[1]),
+    )
+    version = latest.group(1)
+    y, mth, d = (int(latest.group(i)) for i in (2, 3, 4))
+
+    return [{
+        "id": f"SU:{console}:{version}",
+        "kind": "system",
+        "title": f"{console} 시스템 업데이트 {version}",
+        "link": url,
+        "image": None,
+        "summary": notes,
+        "ts": None,
+        "dt": datetime(y, mth, d, tzinfo=KST),
+        "source": SYSTEM_UPDATE_SOURCE,
+    }]
 
 
 def load_seen():
@@ -417,9 +483,15 @@ def make_embed(item):
     if item["kind"] == "official":
         embed["author"] = {"name": "📢 닌텐도 공식 공지"}
         embed["color"] = 0xFFC400
+    elif item["kind"] == "system":
+        embed["author"] = {"name": "🔧 본체 시스템 업데이트"}
+        embed["color"] = 0x00C3E3
     else:
         embed["author"] = {"name": "▶️ 한국닌텐도 유튜브"}
         embed["color"] = 0xE60012
+
+    if item.get("summary"):
+        embed["description"] = item["summary"][:1000]
 
     if item["image"]:
         embed["image"] = {"url": item["image"]}
@@ -543,7 +615,16 @@ def main():
     except Exception as exc:
         print(f"한국닌텐도 유튜브를 가져오지 못했습니다: {exc}")
 
-    if not official_items and not youtube_items:
+    system_items = []
+    for console, url in SYSTEM_UPDATE_PAGES:
+        try:
+            found = parse_system_update(console, url, fetch(url).decode("utf-8", "replace"))
+            print(f"{console} 시스템 버전 확인: {found[0]['title'] if found else '찾지 못함'}")
+            system_items += found
+        except Exception as exc:
+            print(f"{console} 시스템 업데이트 페이지를 가져오지 못했습니다: {exc}")
+
+    if not official_items and not youtube_items and not system_items:
         print("가져온 소식이 없어 이번 실행은 건너뜁니다.")
         return
 
@@ -551,11 +632,11 @@ def main():
     first_lines = []
 
     if seen is None:
-        save_seen([item["id"] for item in official_items + youtube_items])
+        save_seen([item["id"] for item in official_items + youtube_items + system_items])
         print("첫 실행: 지금 있는 소식을 기록만 했습니다.")
         write_log(log_date, [
             f"**{log_time}** · 🆕 첫 실행: 소식 "
-            f"{len(official_items) + len(youtube_items)}개를 기록만 함",
+            f"{len(official_items) + len(youtube_items) + len(system_items)}개를 기록만 함",
         ])
         return
 
@@ -577,6 +658,15 @@ def main():
         )
         youtube_items = []
 
+    if system_items and not has_prefix("SU:"):
+        seen.extend(item["id"] for item in system_items)
+        first_lines.append(
+            "- 🆕 시스템 업데이트 첫 확인: "
+            + ", ".join(item["title"] for item in system_items)
+            + " 기록만 함"
+        )
+        system_items = []
+
     official_cutoff = (local_now - timedelta(days=OFFICIAL_MAX_AGE_DAYS - 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -590,7 +680,9 @@ def main():
     new_official.sort(key=lambda item: item["dt"] or min_dt)
     new_youtube.sort(key=lambda item: item["dt"] or min_dt)
     # 공식 공지를 먼저 처리해서, 같은 소식의 영상은 중복으로 걸러지게 한다
-    new_items = new_official + new_youtube
+    new_system = [i for i in system_items if i["id"] not in seen_set]
+    system_cutoff = now - timedelta(days=SYSTEM_UPDATE_MAX_AGE_DAYS)
+    new_items = new_system + new_official + new_youtube
 
     counts = {
         "old": 0, "rule": 0, "title_dup": 0, "ai_dup": 0, "low": 0, "held": 0,
@@ -603,6 +695,23 @@ def main():
         kind = item["kind"]
         seen.append(item_id)
         label = f"{item['title']} · {item['source']}"
+
+        if kind == "system":
+            # 시스템 업데이트는 공식 정보라 판단 없이 바로 전송
+            if item["dt"] < system_cutoff:
+                counts["old"] += 1
+                log.append(f"- ⏰ 지난 업데이트: {label}")
+                continue
+
+            if send(item):
+                time.sleep(1.5)
+                sent_count += 1
+                log.append(f"- 🔧 업데이트 전송: {label}")
+            else:
+                seen.remove(item_id)
+                counts["held"] += 1
+                log.append(f"- ⚠️ 디스코드 전송 실패로 보류: {label}")
+            continue
 
         if kind == "official":
             if item["dt"] is None or item["dt"] < official_cutoff:
